@@ -40,14 +40,26 @@ data:
 
   cleaning:
     normalize_whitespace: true
-    min_text_chars: 10            # drop near-empty tickets
+    literal_newlines: replace     # 740 bodies contain the text "\n" (backslash + n) -> a space (EDA 8)
+    min_text_chars: 10            # guard: removes 0 tickets in the current data (EDA 7.5, DEC-11)
     remove_duplicates: true       # before splitting (FR-3, risk R-6)
+    duplicate_check: normalized   # compare lowercase, no punctuation, single spaces (EDA 8.3, DEC-13a)
 
-  split:                          # FR-3
-    train: 0.8
-    validation: 0.1
-    test: 0.1
-    stratify_by: queue
+  split:                          # FR-3, DEC-10, DEC-13
+    train: 0.70
+    validation: 0.15
+    test: 0.15
+    stratify_by: queue            # department shares kept the same in every split
+    group_by: paraphrase_family   # a whole family goes to one split, so no sister leaks (DEC-13)
+    family:
+      similarity_threshold: 0.5   # link a ticket to its nearest neighbour if cosine >= 0.5 (EDA 8 E)
+      neighbors: 3                # link to the 3 nearest neighbours: leakage 4.95% -> 1.45% (preprocessing test)
+    leakage_check_threshold: 0.5  # report validation/test tickets with a train neighbour >= 0.5
+
+  output:                         # FR-4
+    format: parquet               # keeps column types; pyarrow is in requirements.txt
+    files: {train: train.parquet, validation: validation.parquet, test: test.parquet}
+    summary_file: split_summary.json   # row counts, checksums, shares, leakage check
 
 # ---------------------------------------------------------- baseline models (FR-5)
 baseline:
@@ -60,10 +72,10 @@ baseline:
   logistic_regression:
     C: 1.0
     max_iter: 1000
-    class_weight: balanced        # departments are imbalanced (about 20x)
+    class_weight_options: [null, balanced]   # try both: no weights vs balanced (DEC-8, DEC-9)
   linear_svm:
     C: 1.0
-    class_weight: balanced
+    class_weight_options: [null, balanced]   # try both (DEC-8, DEC-9)
     calibration:                  # LinearSVC has no probabilities; calibration adds them
       method: sigmoid
       cv: 3
@@ -71,7 +83,7 @@ baseline:
 # ---------------------------------------------------------- transformer model (FR-6)
 transformer:
   model_name: distilbert-base-uncased
-  max_length: 256                 # longer texts are truncated (FR-14)
+  max_length: 256                 # longest ticket 234 tokens -> 0% truncated (EDA 7.10, DEC-12, FR-14)
   batch_size: 16
   learning_rate: 2.0e-5
   epochs: 3
@@ -85,7 +97,9 @@ transformer:
 evaluation:
   top_k: 3
   metrics: [accuracy, macro_f1, top_k_accuracy, per_class_report, confusion_matrix]
-  reference_baselines: [majority_class, most_frequent_top_k]
+  reference_baselines: [majority_class, most_frequent_top_k, stratified_random]   # EDA section 10
+  random_baseline_runs: 100
+  learning_curve_shares: [0.25, 0.5, 0.75, 1.0]   # is the data enough? (EDA 8 E)
   threshold_analysis:
     start: 0.10
     stop: 0.90
